@@ -32,8 +32,8 @@ def create_split_interface():
         rev_cum_l = tf.cumsum(l_curr, reverse=True)[1:, :]  # -1
         rev_cum_l_der1 = tf.cumsum(l_der1, reverse=True)[1:, :]  # -1
         rev_cum_l_der2 = tf.cumsum(l_der2, reverse=True)[1:, :]  # -1
-        delta_up = -cum_l_der1 / cum_l_der2  # -1
-        delta_down = -rev_cum_l_der1 / rev_cum_l_der2  # -1
+        delta_up = -cum_l_der1 / (cum_l_der2 + 1.0) # -1
+        delta_down = -rev_cum_l_der1 / (rev_cum_l_der2 + 1.0)  # -1
         loss_up = cum_l + 0.5 * delta_up * cum_l_der1
         loss_down = rev_cum_l + 0.5 * delta_down * rev_cum_l_der1
         whole_loss = (loss_up + loss_down)
