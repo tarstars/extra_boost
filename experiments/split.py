@@ -213,10 +213,10 @@ def make_split_quick(bias, features, label, ax, profile_file = None):
                          'best_feature_index',
                          'avg_current_loss', 'best_avg_loss']}
     with tf.Session(graph=split_quick_graph) as s:
-        run_options = tf.RunOptions(trace_level=tf.RunOptions.FULL_TRACE)
-        run_metadata = tf.RunMetadata()
-        #sess.run(res, options=run_options, run_metadata=run_metadata)
         if profile_file is not None:
+            run_options = tf.RunOptions(trace_level=tf.RunOptions.FULL_TRACE)
+            run_metadata = tf.RunMetadata()
+            #sess.run(res, options=run_options, run_metadata=run_metadata)
             tensors_values = s.run(tensors, input_tensors, options=run_options, run_metadata=run_metadata)
             
             # Create the Timeline object, and write it to a json
