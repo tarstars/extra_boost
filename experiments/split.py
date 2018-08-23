@@ -1,4 +1,4 @@
-# import sys
+import sys
 # import os
 # import json
 import numpy as np
@@ -10,6 +10,29 @@ import unittest
 #       it is necessary to place threshold out of "claster of equity"
 
 # TODO: manage case of constant features: one constant feature, whole constant feature array, etc.
+
+def tf_print(op, tensors, message='', name=None, cond=None):
+    cond = tf.constant(1, dtype=tf.bool) if cond is None else cond
+    def print_header(cond):
+        if cond:
+            sys.stderr.write(message)
+        return cond
+    def print_bottom(cond):
+        if cond:
+            sys.stderr.write('\n')
+        return cond
+    def print_message(i, x, cond):
+        if cond:
+            sys.stderr.write(message + "     {}:{}\n".format(i, x))
+        return x
+
+    prints = (#[tf.py_func(print_header, [cond], tf.bool)] +
+              [tf.py_func(print_message, [i, tensor, cond], tensor.dtype) for i, tensor in enumerate(tensors)]
+              #+[tf.py_func(print_bottom, [cond], tf.bool)]
+             )
+    with tf.control_dependencies(prints):
+        op = tf.identity(op, name=name)
+    return op
 
 def mycumsum0(inputarr):
     s = tf.shape(inputarr)
@@ -28,8 +51,10 @@ def hreblock(arr, isplus=False, digit=0):
     half2 = (s[0]+1)//2 # ceil
     arr1 = arr[:half2, :s[1]-digit]
     arr2 = arr[half1:,:]
+    arr2x = arr2
     if isplus:
-        arr2 = arr2 + arr1[:, -1:]
+        arr2 = tf.cond(tf.equal(tf.shape(arr1)[1], 0), lambda: arr2, lambda: arr2 + arr1[:, -1:])
+    #arr1 = tf_print(arr1, [half1, half2, tf.shape(arr1), tf.shape(arr2), tf.shape(arr2x), tf.to_int32(digit)], cond=tf.shape(arr)[1]<2, message='hre')
     return tf.concat([arr1, arr2], axis=1), s[0]%2
 
 def vreblock(arr, isplus=False, digit=0):
@@ -39,16 +64,24 @@ def vreblock(arr, isplus=False, digit=0):
     arr1 = arr[:s[0]-digit, :half2]
     arr2 = arr[:, half1:]
     if isplus:
-        arr2 = arr2 + arr1[-1:,:]
+        arr2 = tf.cond(tf.equal(tf.shape(arr1)[0], 0), lambda: arr2, lambda: arr2 + arr1[-1:,:])
     return tf.concat([arr1, arr2], axis=0), s[1]%2
 
 def mycumsum1(arr, axis, name):
-    block, dig = vreblock(arr)
-    block, dig2 = vreblock(block)
-    res = tf.cumsum(block, axis=axis, name=name)
-    res, outdig = hreblock(res, isplus=True, digit=dig2)
-    res, outdig = hreblock(res, isplus=True, digit=dig)
+    block1, dig = vreblock(arr)
+    block2, dig2 = vreblock(block1)
+    cumres = tf.cumsum(block2, axis=axis, name=name)
+    res2, outdig = hreblock(cumres, isplus=True, digit=dig2)
+    res, outdig = hreblock(res2, isplus=True, digit=dig)
+    #res = tf_print(res, [tf.shape(arr), tf.shape(block1), tf.shape(block2), dig, dig2, tf.shape(cumres),  tf.shape(res2), tf.shape(res)], 
+    #               cond = tf.shape(arr)[1] < 3,
+    #               message='CumSum1', name='cumres')
     return res
+
+def mycumsum2(arr, axis, name):
+    m =  100000.0
+    return tf.cast(tf.cumsum(tf.to_int64(arr * m), axis=axis, name=name), dtype=arr.dtype)/tf.cast(m, dtype=arr.dtype)
+    
 
 def common_part(y, b, sorted_thresholds, features, label, bias):
     current_loss = tf.reduce_sum(-(label * tf.log_sigmoid(bias) + (1 - label) * tf.log_sigmoid(-bias)), axis=0)
@@ -66,6 +99,7 @@ def common_part(y, b, sorted_thresholds, features, label, bias):
     cum_l_der1_full = cumsum_der_joined[:, :tf.shape(l_der1)[1]]
     cum_l_der2_full = cumsum_der_joined[:, tf.shape(l_der1)[1]:]
     
+    
     cum_l_der1 = cum_l_der1_full[:-1, :]  # -1
     cum_l_der2 = cum_l_der2_full[:-1, :]  # -1
     rev_cum_l = tf.cumsum(l_curr, reverse=True)[1:, :]  # -1
@@ -73,7 +107,9 @@ def common_part(y, b, sorted_thresholds, features, label, bias):
     #rev_cum_l_der1 = tf.cumsum(l_der1, reverse=True)[1:, :]  # -1
     #rev_cum_l_der2 = tf.cumsum(l_der2, reverse=True)[1:, :]  # -1
     rev_cum_l_der1 = cum_l_der1_full[-1,:]-cum_l_der1
-    rev_cum_l_der2 = cum_l_der2_full[-1,:]-cum_l_der2
+    last_cum_l_der2x = cum_l_der2_full[-1,:]
+    last_cum_l_der2 = tf.identity(last_cum_l_der2x, name='last_cum_l_der2')
+    rev_cum_l_der2 = last_cum_l_der2-cum_l_der2
     
     delta_up = -cum_l_der1 / (cum_l_der2 + 1.0) # -1
     delta_down = -rev_cum_l_der1 / (rev_cum_l_der2 + 1.0)  # -1
@@ -85,7 +121,8 @@ def common_part(y, b, sorted_thresholds, features, label, bias):
     loss_down = 0.5 * delta_down * rev_cum_l_der1
     whole_loss = (loss_up + loss_down) + current_loss
     
-    features_amount = tf.to_double(tf.shape(features)[0])
+    features_amount_int = tf.shape(features)[0]
+    features_amount = tf.cast(features_amount_int, dtype=features.dtype)
     #######
     # -----#
     # -----#   -->   iiiIiii (best_loss_argmin0), mmmMmmm (min_loss_axis0)
@@ -99,7 +136,9 @@ def common_part(y, b, sorted_thresholds, features, label, bias):
     best_avg_loss = best_loss / features_amount
     avg_current_loss = current_loss / features_amount
     # iiiIiii  ->  I
-    best_index = best_loss_argmin0[best_loss_argmin1]
+    best_index_x = best_loss_argmin0[best_loss_argmin1]
+    best_index = tf.identity(best_index_x, name='best_index')
+    print(best_index_x.name, features_amount_int.name, last_cum_l_der2x.name, cum_l_der2_full.name)
     thr = (sorted_thresholds[best_index, best_loss_argmin1] +
            sorted_thresholds[best_index + 1, best_loss_argmin1]) / 2
     best_delta_up = delta_up[best_index, best_loss_argmin1]
@@ -164,13 +203,36 @@ def take_along_axis(arr, indices):
     taken_arr = tf.gather(tf.reshape(arr, (-1,)), indices * m + r, axis=0)
     return taken_arr
 
+def tfravel(x, name=None):
+    return tf.reshape(x, (-1, ), name=name)
+
+def tf_new_ax(ax, cond, name=''):
+    #reindex = np.cumsum(cond)-1
+    #axT = ax.T
+    #return reindex[axT][cond[axT]].reshape((ax.shape[1], -1)).T
+    
+    
+    #reindex = tf.cumsum(tf.to_int32(cond), name='cumsum_'+name)-1  # Normal
+    reindex = tfravel(tf.to_int32(mycumsum1(tf.reshape(tf.to_double(cond), (1,-1)), axis=1, name='cumsum_'+name)+.5)-1) # via float
+    #reindex = tf.to_int32(tf.cumsum(tf.to_int64(cond), name='cumsum_'+name)-1)  # 
+
+    axT = tf.transpose(ax)
+    newindecies = tf.gather(reindex, axT, axis=0, name='newindecies')
+    huge_cond = tf.gather(cond, axT, axis=0, name='huge_cond') # like axT.shape 
+    newindecies_ravel = tfravel(newindecies, name='newindecies_ravel')
+    huge_cond_ravel = tfravel(huge_cond, name='huge_cond_ravel')
+    #print(newindecies_ravel.shape, newindecies_ravel.dtype)
+    #print(huge_cond_ravel.shape, huge_cond_ravel.dtype)
+    squeezed_ax = tf.boolean_mask(newindecies_ravel, huge_cond_ravel)
+    return tf.transpose(tf.reshape(squeezed_ax, (tf.shape(ax)[1], -1) ))
+
 def create_split_quick():
     graph = tf.Graph()
     with graph.as_default():
-        features = tf.placeholder(dtype=tf.float64)
-        label = tf.placeholder(dtype=tf.float64)
-        bias = tf.placeholder(dtype=tf.float64)
-        ax = tf.placeholder(dtype=tf.int32)
+        features = tf.placeholder(dtype=tf.float32, shape=(None, None))
+        label = tf.placeholder(dtype=tf.float32)
+        bias = tf.placeholder(dtype=tf.float32)
+        ax = tf.placeholder(dtype=tf.int32, shape=(None, None))
         #gax = tf.transpose(tf.nn.top_k(-tf.transpose(features), k=tf.shape(features)[-2]).indices)
         y = tf.gather(label, ax)[:, :, 0]
         b = tf.gather(bias, ax)[:, :, 0]
@@ -180,9 +242,21 @@ def create_split_quick():
         sorted_thresholds = take_along_axis(features, ax)
         common_tensors = common_part(y, b, sorted_thresholds, features, label, bias)
         
+        best_feature = features[:, common_tensors['best_feature_index']]
+        left_cond = best_feature < common_tensors['thr']
+        #left_cond = ax[:common_tensors['best_index']+1, common_tensors['best_feature_index']]
+        
+        right_cond = tf.logical_not(left_cond)
+        ax_left = tf_new_ax(ax, left_cond, name='ax_left')
+        ax_right = tf_new_ax(ax, right_cond, name='ax_right')
+
     result = {'graph': graph,
               #'gax': gax,
               'ax': ax,
+              'ax_left': ax_left,
+              'ax_right': ax_right,
+              'left_cond': left_cond,
+              'right_cond': right_cond,
              }
     result.update(common_tensors)
     return result
@@ -205,28 +279,35 @@ def make_split(bias, features, label):
         tensors_values = s.run(tensors, input_tensors)
     return tensors_values
 
+quick_tensors = {t: split_quick[t]
+           for t in ['thr', 'best_loss', 'best_index', 'best_delta_up', 'best_delta_down', 'current_loss',
+                     'best_feature_index',
+                     'avg_current_loss', 'best_avg_loss',
+                     'ax_left', 'ax_right', 'left_cond', 'right_cond']}
 
-def make_split_quick(bias, features, label, ax, profile_file = None):
-    input_tensors = {split_quick[t]: val for t, val in [('features', features), ('bias', bias), ('label', label), ('ax', ax)]}
-    tensors = {t: split_quick[t]
-               for t in ['thr', 'best_loss', 'best_index', 'best_delta_up', 'best_delta_down', 'current_loss',
-                         'best_feature_index',
-                         'avg_current_loss', 'best_avg_loss']}
-    with tf.Session(graph=split_quick_graph) as s:
-        if profile_file is not None:
-            run_options = tf.RunOptions(trace_level=tf.RunOptions.FULL_TRACE)
-            run_metadata = tf.RunMetadata()
-            #sess.run(res, options=run_options, run_metadata=run_metadata)
-            tensors_values = s.run(tensors, input_tensors, options=run_options, run_metadata=run_metadata)
-            
-            # Create the Timeline object, and write it to a json
-            tl = timeline.Timeline(run_metadata.step_stats)
-            ctf = tl.generate_chrome_trace_format()
-            with open(profile_file, 'w') as f:
-                f.write(ctf)
-        else:
-            tensors_values = s.run(tensors, input_tensors) # No profile
+def quick_run_session(s, quick_input_tensors, profile_file = None):
+    if profile_file is not None:
+        run_options = tf.RunOptions(trace_level=tf.RunOptions.FULL_TRACE)
+        run_metadata = tf.RunMetadata()
+        #sess.run(res, options=run_options, run_metadata=run_metadata)
+        tensors_values = s.run(quick_tensors, quick_input_tensors, options=run_options, run_metadata=run_metadata)
 
+        # Create the Timeline object, and write it to a json
+        tl = timeline.Timeline(run_metadata.step_stats)
+        ctf = tl.generate_chrome_trace_format()
+        with open(profile_file, 'w') as f:
+            f.write(ctf)
+    else:
+        tensors_values = s.run(quick_tensors, quick_input_tensors) # No profile
+    return tensors_values
+
+def make_split_quick(bias, features, label, ax, profile_file = None, sess = None):
+    quick_input_tensors = {split_quick[t]: val for t, val in [('features', features), ('bias', bias), ('label', label), ('ax', ax)]}
+    if sess is None:
+        with tf.Session(graph=split_quick_graph) as s:
+            tensors_values = quick_run_session(s, quick_input_tensors, profile_file=profile_file)
+    else:
+        tensors_values = quick_run_session(sess, quick_input_tensors, profile_file=profile_file)
     return tensors_values
 
 def make_gax(features):
