@@ -2,8 +2,7 @@ import sys, os, io, json, numpy as np, random, time
 import graphviz
 
 import tensorflow as tf
-import split
-#from   split import make_split_quick, make_gax, split_quick_graph, split_quick_graph_transpose
+from split import SplitMaker
 
 # import cProfile
 
@@ -272,24 +271,27 @@ class EBooster:
         for tree, tree_arrays in (self.forest if tree_limit is None else self.forest[:tree_limit]):
             pred = pred + tree_apply(tree_arrays, features)
         return pred 
-    
+
+
 def train(params, ematrix, num_boost_round = 10):
     start_params = {'max_depth': 5, 'learning_rate': 0.3, 'splitgax': False, 'transposed_feature': False} 
     start_params.update(params)
     
+    reduce_axis=1 if start_params['transposed_feature'] else 0
+    # TODO Singleton
+    split_maker_old = SplitMaker.make_split_old()
+    split_maker = SplitMaker.make_split_new(reduce_axis=reduce_axis, make_transpose=(reduce_axis==0))
+        
     if start_params['splitgax'] and ematrix.gax is None:
-        ematrix.gax = make_gax(ematrix.features, axis=1 if start_params['transposed_feature'] else 0)
+        ematrix.gax = split_maker_old.make_gax(ematrix.features, axis=reduce_axis)
     
     forest = []
     bias = np.zeros(ematrix.label.shape)
-    print('transposed_feature', start_params['transposed_feature'])
-    print('graph_1:', id(split_quick_graph_transpose))
-    print('graph_2:', id(split_quick_graph))
-    print('graph_selected:', id(split_quick_graph_transpose if start_params['transposed_feature'] else split_quick_graph))
-    with tf.Session(graph=split_quick_graph_transpose if start_params['transposed_feature'] else split_quick_graph) as s:
+    features = ematrix.features
+    with tf.Session(graph=split_maker.graph) as s:
         for r in range(num_boost_round):
             print("\n{} round".format(r), file=sys.stderr)
-            tree = build_tree(start_params, EMatrix(ematrix.features, ematrix.label, bias, gax=ematrix.gax, splitgax=start_params['splitgax']), sess=s)
+            tree = build_tree(start_params, EMatrix(ematrix.features, ematrix.label, bias, gax=ematrix.gax, splitgax=start_params['splitgax']), split_maker=split_maker, sess=s)
             #print("tree ok, bias shape = {}".format(bias.shape), file=sys.stderr)
             tree_arrays = init_arrays(tree, init_id(tree))
             bias_delta = tree_apply(tree_arrays, features)

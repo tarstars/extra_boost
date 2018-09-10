@@ -299,55 +299,6 @@ class SplitMaker:
     def split_new(self):
         pass
 
-
-
-#split_quick = create_split_quick()
-#split_quick_graph = split_quick['graph']
-
-#split_quick_transpose = create_split_quick(reduce_axis=1, make_transpose=False, use_my_cumsum=True)
-#split_quick_graph_transpose = split_quick_transpose['graph']
-
-
-#quick_tensors = {t: split_quick[t] for t in tensors_list}
-#quick_tensors_transpose = {t: split_quick_transpose[t] for t in tensors_list}
-
-def quick_run_session1111(s, quick_input_tensors, transposed_feature=False, profile_file = None):
-    current_tensors = quick_tensors_transpose if transposed_feature else quick_tensors
-    if profile_file is not None:
-        run_options = tf.RunOptions(trace_level=tf.RunOptions.FULL_TRACE)
-        run_metadata = tf.RunMetadata()
-        #sess.run(res, options=run_options, run_metadata=run_metadata)
-        tensors_values = s.run(current_tensors, quick_input_tensors, options=run_options, run_metadata=run_metadata)
-
-        # Create the Timeline object, and write it to a json
-        tl = timeline.Timeline(run_metadata.step_stats)
-        ctf = tl.generate_chrome_trace_format()
-        with open(profile_file, 'w') as f:
-            f.write(ctf)
-    else:
-        tensors_values = s.run(current_tensors, quick_input_tensors) # No profile
-    return tensors_values
-
-def make_split_quick111(bias, features, label, ax, params, profile_file = None, sess = None):
-    transposed_feature=params['transposed_feature']
-    final_params = {"unbalanced_penalty": 0, "lambda": 1}
-    final_params.update(params)
-    current_split = split_quick_transpose if transposed_feature else split_quick
-    current_graph = split_quick_graph_transpose if transposed_feature else split_quick_graph
-    quick_input_tensors = {current_split[t]: val for t, val in [('features', features), ('bias', bias), ('label', label), ('ax', ax),
-                                                               ('unbalanced_penalty', final_params['unbalanced_penalty'])]}
-    print('make_split_quick graph id:', id(current_split['features'].graph))
-    if sess is None:
-        with tf.Session(graph=current_graph) as s:
-            tensors_values = quick_run_session(s, quick_input_tensors, transposed_feature=transposed_feature, profile_file=profile_file)
-    else:
-        tensors_values = quick_run_session(sess, quick_input_tensors, transposed_feature=transposed_feature, profile_file=profile_file)
-    return tensors_values
-
-def make_gax1111(features, axis=0):
-    with tf.Session(graph=split_graph) as s:
-        gax_val = s.run(split_interface['gax'], {split_interface['features']: (features if axis==0 else features.T)})
-    return gax_val if axis==0 else gax_val.T
         
 class TestSplit(unittest.TestCase):
     def test_small_split_00(self):
