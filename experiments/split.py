@@ -17,14 +17,9 @@ from tf_utils import tfravel, take_along_axis
 
 # TODO: manage case of constant features: one constant feature, whole constant feature array, etc.
 
-
-def common_part(y, b, sorted_thresholds, features, label, bias, unbalanced_penalty=0, reduce_axis=0, make_transpose=True, use_my_cumsum=True):
+def cumsum_two_derivatives(l_der1, l_der2, reduce_axis, make_transpose, use_my_cumsum):
     alt_axis = 1 - reduce_axis
-    current_loss = tf.reduce_sum(-(label * tf.log_sigmoid(bias) + (1 - label) * tf.log_sigmoid(-bias)))
-    # l_curr = -(y * tf.log_sigmoid(b) + (1 - y) * tf.log_sigmoid(-b))
-    l_der1 = -y * tf.sigmoid(-b) + (1 - y) * tf.sigmoid(b)
-    l_der2 = tf.sigmoid(-b) * tf.sigmoid(b)
-    
+
     # Choice of 3 cases
     #cum_l_der1_full = tf.cumsum(l_der1, axis=reduce_axis)  # -1
     #cum_l_der2_full = tf.cumsum(l_der2, axis=reduce_axis)  # -1
@@ -54,27 +49,87 @@ def common_part(y, b, sorted_thresholds, features, label, bias, unbalanced_penal
         cum_l_der2, tot_der2 = cum_l_der2_full[:-1, :], cum_l_der2_full[-1, :]  # -1
     else:
         cum_l_der1, tot_der1 = cum_l_der1_full[:, :-1], cum_l_der1_full[:, -1:]  # -1
-        cum_l_der2, tot_der2 = cum_l_der2_full[:, :-1], cum_l_der2_full[:, -1:]  # -1        
+        cum_l_der2, tot_der2 = cum_l_der2_full[:, :-1], cum_l_der2_full[:, -1:]  # -1     
 
     #rev_cum_l_der1 = tf.cumsum(l_der1, reverse=True)[1:, :]  # -1
     #rev_cum_l_der2 = tf.cumsum(l_der2, reverse=True)[1:, :]  # -1
     rev_cum_l_der1 = tot_der1 - cum_l_der1
     rev_cum_l_der2 = tot_der2 - cum_l_der2
+    return cum_l_der1, cum_l_der2, rev_cum_l_der1, rev_cum_l_der2
+
+
+def default_get_loss(l_der1, l_der2, reduce_axis, make_transpose, use_my_cumsum):
+    cum_l_der1, cum_l_der2, rev_cum_l_der1, rev_cum_l_der2 = cumsum_two_derivatives(l_der1, l_der2, reduce_axis=reduce_axis, make_transpose=make_transpose, use_my_cumsum=use_my_cumsum)
     
     delta_up = -cum_l_der1 / (cum_l_der2 + 1.0) # -1
     delta_down = -rev_cum_l_der1 / (rev_cum_l_der2 + 1.0)  # -1
     
     #loss_up = cum_l + 0.5 * delta_up * cum_l_der1
     #loss_down = rev_cum_l + 0.5 * delta_down * rev_cum_l_der1
-    #whole_loss = (loss_up + loss_down)
+    loss_up = 0.5 * delta_up * cum_l_der1
+    loss_down = 0.5 * delta_down * rev_cum_l_der1
+    loss_sum = loss_up + loss_down
+    
+    return delta_up, delta_down, loss_sum
+
+
+def extra_get_loss(l_der1, l_der2, extra, reduce_axis, make_transpose, use_my_cumsum):
+    extra_shape = tf.shape(extra)
+    extra_1 = tf.reshape(extra, (extra_shape[0], extra_shape[1], 1, extra_shape[2]))
+    extra_2 = tf.reshape(extra, (extra_shape[0], extra_shape[1], extra_shape[2], 1))
+    l_der_shape = tf.shape(l_der2)
+    l_der2_multy = tf.reshape(l_der2, (l_der_shape[0], l_der_shape[1], 1, 1))
+    l_der1_multy = tf.reshape(l_der1, (l_der_shape[0], l_der_shape[1], 1, 1))
+    h = l_der2_multy * extra_1 * extra_2
+    lder_extra = l_der1_multy * extra_2
+    
+    h_cumsum = tf.cumsum(h, axis=reduce_axis)
+    g_cumsum = tf.cumsum(lder_extra, axis=reduce_axis)
+    
+    if reduce_axis==0:
+        g_upper, tot_g = g_cumsum[:-1, :, :, :], g_cumsum[-1:, :, :, :]  # -1
+        h_upper, tot_h = h_cumsum[:-1, :, :, :], h_cumsum[-1:, :, :, :]  # -1
+    else:
+        g_upper, tot_g = g_cumsum[:, :-1, :, :], g_cumsum[:, -1:, :, :]  # -1
+        h_upper, tot_h = h_cumsum[:, :-1, :, :], h_cumsum[:, -1:, :, :]  # -1
+
+    g_lower = tot_g - g_upper
+    h_lower = tot_h - h_upper
+    
+    I = tf.eye(extra_shape[2], batch_shape=(1,1))
+    ih_upper = tf.matrix_inverse(h_upper + I)  #TODO: pass lambda through parameters
+    ih_lower = tf.matrix_inverse(h_lower + I)
+    
+    w_up = tf.matmul(ih_upper, g_upper)
+    w_dn = tf.matmul(ih_lower, g_lower)
+    
+    loss_down = 0.5 * tf.matmul(w_dn, g_lower, transpose_a=True)
+    loss_up = 0.5 * tf.matmul(w_up, g_up, transpose_a=True)
+    loss_sum = loss_up + loss_down
+    
+    return w_up, w_dn, loss_sum
+
+    
+def common_part(y, b, sorted_thresholds, features, label, bias, extra=None, unbalanced_penalty=0, reduce_axis=0, make_transpose=True, use_my_cumsum=True):
+    alt_axis = 1 - reduce_axis
+    current_loss = tf.reduce_sum(-(label * tf.log_sigmoid(bias) + (1 - label) * tf.log_sigmoid(-bias)))
+    # l_curr = -(y * tf.log_sigmoid(b) + (1 - y) * tf.log_sigmoid(-b))
+    l_der1 = -y * tf.sigmoid(-b) + (1 - y) * tf.sigmoid(b)
+    l_der2 = tf.sigmoid(-b) * tf.sigmoid(b)
+    
+
+    if extra is None:
+        delta_up, delta_down, loss_sum = default_get_loss(l_der1, l_der2, reduce_axis=reduce_axis, make_transpose=make_transpose, use_my_cumsum=use_my_cumsum)
+    else:
+        delta_up, delta_down, loss_sum = extra_get_loss(l_der1, l_der2, extra=extra, reduce_axis=reduce_axis, make_transpose=make_transpose, use_my_cumsum=use_my_cumsum)
+
+    
     features_amount_int = tf.shape(features)[reduce_axis]
     features_amount = tf.cast(features_amount_int, dtype=features.dtype)
     frange = tf.cast(tf.range(features_amount_int-1), dtype=features_amount.dtype)
     edge_penalty = tf.reshape(tf.abs(frange - features_amount / 2), 
                               (-1, 1) if reduce_axis == 0 else (1, -1)) 
-    loss_up = 0.5 * delta_up * cum_l_der1
-    loss_down = 0.5 * delta_down * rev_cum_l_der1
-    whole_loss = (loss_up + loss_down) + current_loss + edge_penalty * unbalanced_penalty
+    whole_loss = loss_sum + current_loss + edge_penalty * unbalanced_penalty
     
     
     #######
@@ -112,10 +167,6 @@ def common_part(y, b, sorted_thresholds, features, label, bias, unbalanced_penal
             #'l_curr': l_curr,
             'l_der1': l_der1,
             'l_der2': l_der2,
-            'cum_l_der1': cum_l_der1,
-            'cum_l_der2': cum_l_der2,
-            'rev_cum_l_der1': rev_cum_l_der1,
-            'rev_cum_l_der2': rev_cum_l_der2,
             'delta_up': delta_up,
             'delta_down': delta_down,
             'best_delta_up': best_delta_up,
