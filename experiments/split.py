@@ -70,7 +70,7 @@ def default_get_loss(l_der1, l_der2, reduce_axis, make_transpose, use_my_cumsum)
     loss_down = 0.5 * delta_down * rev_cum_l_der1
     loss_sum = loss_up + loss_down
     
-    return delta_up, delta_down, loss_sum
+    return tf.expand_dims(delta_up, axis=2), tf.expand_dims(delta_down, axis=2), loss_sum
 
 
 def extra_get_loss(l_der1, l_der2, extra, reduce_axis, make_transpose, use_my_cumsum):
@@ -103,11 +103,12 @@ def extra_get_loss(l_der1, l_der2, extra, reduce_axis, make_transpose, use_my_cu
     w_up = tf.matmul(ih_upper, g_upper)
     w_dn = tf.matmul(ih_lower, g_lower)
     
-    loss_down = 0.5 * tf.matmul(w_dn, g_lower, transpose_a=True)
-    loss_up = 0.5 * tf.matmul(w_up, g_up, transpose_a=True)
+    loss_down = 0.5 * tf.matmul(w_dn, g_lower, transpose_a=True)[:,:,0,0]
+    loss_up = 0.5 * tf.matmul(w_up, g_upper, transpose_a=True)[:,:,0,0]
     loss_sum = loss_up + loss_down
     
-    return w_up, w_dn, loss_sum
+    # print(w_up.shape, w_dn.shape, loss_sum.shape)
+    return w_up[:,:,:,0], w_dn[:,:,:,0], loss_sum
 
     
 def common_part(y, b, sorted_thresholds, features, label, bias, extra=None, unbalanced_penalty=0, reduce_axis=0, make_transpose=True, use_my_cumsum=True):
@@ -151,14 +152,16 @@ def common_part(y, b, sorted_thresholds, features, label, bias, extra=None, unba
     if reduce_axis == 0:
         thr = (sorted_thresholds[best_index, best_loss_argmin1] +
                sorted_thresholds[best_index + 1, best_loss_argmin1]) / 2
-        best_delta_up = delta_up[best_index, best_loss_argmin1]
-        best_delta_down = delta_down[best_index, best_loss_argmin1]
+        best_delta_up = delta_up[best_index, best_loss_argmin1, :]
+        best_delta_down = delta_down[best_index, best_loss_argmin1, :]
     else:
         thr = (sorted_thresholds[best_loss_argmin1, best_index] +
            sorted_thresholds[best_loss_argmin1, best_index + 1]) / 2
-        best_delta_up = delta_up[best_loss_argmin1, best_index]
-        best_delta_down = delta_down[best_loss_argmin1, best_index]
-    
+        best_delta_up = delta_up[best_loss_argmin1, best_index, :]
+        best_delta_down = delta_down[best_loss_argmin1, best_index, :]
+
+        best_delta_up = tf.squeeze(best_delta_up)
+        best_delta_down = tf.squeeze(best_delta_down)
     
     return {'features': features,
             'bias': bias,
@@ -233,11 +236,12 @@ def tf_new_ax(ax, cond, reduce_axis=0, name=''):
     
     return tf.transpose(new_axT) if reduce_axis==0 else new_axT
 
-def create_split_quick(reduce_axis=0, make_transpose=True, use_my_cumsum=True):
+def create_split_quick(reduce_axis=0, make_transpose=True, use_my_cumsum=True, use_extra=False):
     graph = tf.Graph()
     with graph.as_default():
         info_name='quick_reduce_axis_{}_make_transpose_{}_use_my_comsum_{}_'.format(reduce_axis, make_transpose, use_my_cumsum)
         features = tf.placeholder(dtype=tf.float32, shape=(None, None), name='features_' + info_name)
+        extra_features = tf.placeholder(dtype=tf.float32, shape=(None, None), name='extra_features_' + info_name)
         label = tf.placeholder(dtype=tf.float32, name='label_' + info_name)
         bias = tf.placeholder(dtype=tf.float32, name='bias_' + info_name)
         ax = tf.placeholder(dtype=tf.int32, shape=(None, None), name='ax_' + info_name)
@@ -245,11 +249,19 @@ def create_split_quick(reduce_axis=0, make_transpose=True, use_my_cumsum=True):
         #gax = tf.transpose(tf.nn.top_k(-tf.transpose(features), k=tf.shape(features)[-2]).indices)
         y = tf.gather(label, ax)[:, :, 0]
         b = tf.gather(bias, ax)[:, :, 0]
+
+        if use_extra:
+            if reduce_axis == 0:
+                extra = tf.gather(extra_features, ax, name='extra_' + info_name)
+            else:
+                extra = tf.gather(extra_features.T, ax.T, name='extra_' + info_name)
+                extra = tf.transpose(extra, perm=[1, 0, 2], name='textra_' + info_name)
+        
         # F (N x M),  ax (N, M): ax_{ij} - pos in F_{*j}, 
         # ST_{i,j} = F_{ax_{i,j}, j}
         # sorted_thresholds = tf.gather(features, ax, axis=0)
         sorted_thresholds = take_along_axis(features, ax, reduce_axis=reduce_axis)
-        common_tensors = common_part(y, b, sorted_thresholds, features, label, bias, unbalanced_penalty=unbalanced_penalty,
+        common_tensors = common_part(y, b, sorted_thresholds, features, label, bias, extra=extra if use_extra else None, unbalanced_penalty=unbalanced_penalty,
                                      reduce_axis=reduce_axis, make_transpose=make_transpose, use_my_cumsum=use_my_cumsum)
         
         if reduce_axis == 0:
@@ -265,6 +277,7 @@ def create_split_quick(reduce_axis=0, make_transpose=True, use_my_cumsum=True):
 
     result = {'graph': graph,
               #'gax': gax,
+              'extra_features': extra_features,
               'ax': ax,
               'ax_left': ax_left,
               'ax_right': ax_right,
@@ -309,11 +322,11 @@ class SplitMaker:
         return split_maker
 
     @classmethod
-    def make_split_new(cls, reduce_axis=0, make_transpose=True, use_my_cumsum=True):
+    def make_split_new(cls, reduce_axis=0, make_transpose=True, use_my_cumsum=True, use_extra=False):
         tensors_list = ['thr', 'best_loss', 'best_index', 'best_delta_up', 'best_delta_down', 'current_loss',
                         'best_feature_index', 'avg_current_loss', 'best_avg_loss',
                         'ax_left', 'ax_right', 'left_cond', 'right_cond']
-        split_maker = cls(create_split_quick(reduce_axis, make_transpose, use_my_cumsum), tensors_list)
+        split_maker = cls(create_split_quick(reduce_axis, make_transpose, use_my_cumsum, use_extra), tensors_list)
         split_maker.reduce_axis = reduce_axis
         split_maker.split = split_maker.split_quick
         return split_maker
@@ -334,10 +347,10 @@ class SplitMaker:
             tensors_values = s.run(self.tensors, input_tensors) # No profile
         return tensors_values
 
-    def split_quick(self, bias, features, label, ax, params, profile_file = None, sess = None):
+    def split_quick(self, *, bias, features, extra_features, label, ax, params, profile_file = None, sess = None):
         final_params = {"unbalanced_penalty": 0, "lambda": 1}
         final_params.update(params)
-        input_tensors = {self.interface[t]: val for t, val in [('features', features), ('bias', bias), ('label', label), ('ax', ax),
+        input_tensors = {self.interface[t]: val for t, val in [('features', features), ('extra_features', extra_features), ('bias', bias), ('label', label), ('ax', ax),
                                                                    ('unbalanced_penalty', final_params['unbalanced_penalty'])]}
         #print('make_split_quick graph id:', id(self.interface['features'].graph))
         if sess is None:

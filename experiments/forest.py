@@ -19,9 +19,10 @@ def profile(func):
 
 
 class EMatrix:
-    def __init__(self, features, label, bias=None, gax=None, splitgax = False):
+    def __init__(self, features, label, *, extra_features=None, bias=None, gax=None, splitgax = False):
         self.bias = bias
         self.features = features
+        self.extra_features = extra_features
         self.label = label
         self.gax = gax
         self.splitgax = splitgax
@@ -74,10 +75,11 @@ def init_id(root):
     init_id_helper(root, current_id)
     return current_id[0] 
 
+
 def init_arrays_helper(node, arrays):
     if not isinstance(node, TreeNode):
         arrays['is_leaf'][node.id] = 1
-        arrays['leaf_data'][node.id, 0] = node.val  # Leaf
+        arrays['leaf_data'][node.id, :] = node.val  # Leaf
         return
     init_arrays_helper(node.left, arrays)
     init_arrays_helper(node.right, arrays)
@@ -87,8 +89,9 @@ def init_arrays_helper(node, arrays):
     arrays['features'][node.id] = node.val.val['best_feature_index']
     arrays['is_leaf'][node.id] = 0
     arrays['depths'][node.id] = node.depth
-    
-def init_arrays(root, n):
+
+
+def init_arrays(root, n, weights_num=1):
     def empty_array():
         return np.zeros(n, dtype=np.int32)
     arrays = dict(features=empty_array(),
@@ -97,7 +100,7 @@ def init_arrays(root, n):
                   no_node=empty_array(),
                   is_leaf=empty_array(),
                   depths=empty_array(),
-                  leaf_data=np.zeros((n,1), dtype=np.float32)
+                  leaf_data=np.zeros((n,weights_num), dtype=np.float32)
                  )
     init_arrays_helper(root, arrays)
     arrays['treedepth'] = np.max(arrays['depths'])
@@ -135,7 +138,9 @@ def split_ematrix(ematrix, depth, params, split_maker, sess=None):
         #print(ematrix.features.shape, file=sys.stderr)
         #if (ematrix.features.shape[0]<=2):
         #    print(ematrix.gax, file=sys.stderr)
-        split_info = split_maker.split(ematrix.bias, ematrix.features, ematrix.label, ematrix.gax, params=params,
+        split_info = split_maker.split(bias=ematrix.bias, features=ematrix.features, 
+                                       extra_features=ematrix.extra_features,
+                                       label=ematrix.label, ax=ematrix.gax, params=params,
                                       profile_file = ('profile_cumsum3.json' if depth==1 else None), sess=sess)
         dif = time.clock() - start
         time1 += dif
@@ -154,6 +159,7 @@ def split_ematrix(ematrix, depth, params, split_maker, sess=None):
         
     start = time.clock()
     features = ematrix.features
+    extra_features = ematrix.extra_features
     bias = ematrix.bias
     label = ematrix.label
         
@@ -177,8 +183,12 @@ def split_ematrix(ematrix, depth, params, split_maker, sess=None):
             ax_left = ax_right = None
     
     axis1 = split_maker.reduce_axis == 1
-    left_ematrix = EMatrix(features[:, cond_left] if axis1 else features[cond_left, :], label[cond_left], bias[cond_left], gax=ax_left)
-    right_ematrix = EMatrix(features[:, cond_right] if axis1 else features[cond_right, :], label[cond_right], bias[cond_right], gax=ax_right)
+    left_ematrix = EMatrix(features=features[:, cond_left] if axis1 else features[cond_left, :], 
+                           extra_features=extra_features[:, cond_left] if axis1 else extra_features[cond_left, :],
+                           label=label[cond_left], bias=bias[cond_left], gax=ax_left)
+    right_ematrix = EMatrix(features=features[:, cond_right] if axis1 else features[cond_right, :],
+                            extra_features=extra_features[:, cond_right] if axis1 else extra_features[cond_right, :],
+                            label=label[cond_right], bias=bias[cond_right], gax=ax_right)
     left_info = {'prediction': split_info['best_delta_up'], 'ematrix': left_ematrix, 'sess': sess}
     right_info = {'prediction': split_info['best_delta_down'], 'ematrix': right_ematrix, 'sess': sess}
     split_info['left_info'] = left_info
@@ -280,7 +290,7 @@ def train(params, ematrix, num_boost_round = 10):
     reduce_axis=1 if start_params['transposed_feature'] else 0
     # TODO Singleton
     split_maker_old = SplitMaker.make_split_old()
-    split_maker = SplitMaker.make_split_new(reduce_axis=reduce_axis, make_transpose=(reduce_axis==0))
+    split_maker = SplitMaker.make_split_new(reduce_axis=reduce_axis, make_transpose=(reduce_axis==0), use_extra = ematrix.extra_features is not None)
         
     if start_params['splitgax'] and ematrix.gax is None:
         ematrix.gax = split_maker_old.make_gax(ematrix.features, axis=reduce_axis)
@@ -291,9 +301,11 @@ def train(params, ematrix, num_boost_round = 10):
     with tf.Session(graph=split_maker.graph) as s:
         for r in range(num_boost_round):
             print("\n{} round".format(r), file=sys.stderr)
-            tree = build_tree(start_params, EMatrix(ematrix.features, ematrix.label, bias, gax=ematrix.gax, splitgax=start_params['splitgax']), split_maker=split_maker, sess=s)
+            tree = build_tree(start_params, EMatrix(ematrix.features, ematrix.label, bias=bias, 
+                                                    extra_features=ematrix.extra_features, gax=ematrix.gax,
+                                                    splitgax=start_params['splitgax']), split_maker=split_maker, sess=s)
             #print("tree ok, bias shape = {}".format(bias.shape), file=sys.stderr)
-            tree_arrays = init_arrays(tree, init_id(tree))
+            tree_arrays = init_arrays(tree, init_id(tree), weights_num = ematrix.extra_features.shape[1] if ematrix.extra_features is not None else 1)
             bias_delta = tree_apply(tree_arrays, features)
             #print("apply ok, bias delta shape = {}".format(bias_delta.shape), file=sys.stderr)
             bias = bias + np.reshape(bias_delta, newshape=bias.shape)
