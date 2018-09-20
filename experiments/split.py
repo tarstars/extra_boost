@@ -100,8 +100,8 @@ def extra_get_loss(l_der1, l_der2, extra, reduce_axis, make_transpose, use_my_cu
     ih_upper = tf.matrix_inverse(h_upper + I)  #TODO: pass lambda through parameters
     ih_lower = tf.matrix_inverse(h_lower + I)
     
-    w_up = tf.matmul(ih_upper, g_upper)
-    w_dn = tf.matmul(ih_lower, g_lower)
+    w_up = -tf.matmul(ih_upper, g_upper)
+    w_dn = -tf.matmul(ih_lower, g_lower)
     
     loss_down = 0.5 * tf.matmul(w_dn, g_lower, transpose_a=True)[:,:,0,0]
     loss_up = 0.5 * tf.matmul(w_up, g_upper, transpose_a=True)[:,:,0,0]
@@ -239,7 +239,7 @@ def tf_new_ax(ax, cond, reduce_axis=0, name=''):
 def create_split_quick(reduce_axis=0, make_transpose=True, use_my_cumsum=True, use_extra=False):
     graph = tf.Graph()
     with graph.as_default():
-        info_name='quick_reduce_axis_{}_make_transpose_{}_use_my_comsum_{}_'.format(reduce_axis, make_transpose, use_my_cumsum)
+        info_name='quick_axis_{}_make_transpose_{}_use_my_cumsum_{}_extra_{}_'.format(reduce_axis, make_transpose, use_my_cumsum, use_extra)
         features = tf.placeholder(dtype=tf.float32, shape=(None, None), name='features_' + info_name)
         extra_features = tf.placeholder(dtype=tf.float32, shape=(None, None), name='extra_features_' + info_name)
         label = tf.placeholder(dtype=tf.float32, name='label_' + info_name)
@@ -254,14 +254,16 @@ def create_split_quick(reduce_axis=0, make_transpose=True, use_my_cumsum=True, u
             if reduce_axis == 0:
                 extra = tf.gather(extra_features, ax, name='extra_' + info_name)
             else:
-                extra = tf.gather(extra_features.T, ax.T, name='extra_' + info_name)
+                extra = tf.gather(tf.transpose(extra_features), tf.transpose(ax), name='extra_' + info_name)
                 extra = tf.transpose(extra, perm=[1, 0, 2], name='textra_' + info_name)
+        else:
+            extra = None
         
         # F (N x M),  ax (N, M): ax_{ij} - pos in F_{*j}, 
         # ST_{i,j} = F_{ax_{i,j}, j}
         # sorted_thresholds = tf.gather(features, ax, axis=0)
         sorted_thresholds = take_along_axis(features, ax, reduce_axis=reduce_axis)
-        common_tensors = common_part(y, b, sorted_thresholds, features, label, bias, extra=extra if use_extra else None, unbalanced_penalty=unbalanced_penalty,
+        common_tensors = common_part(y, b, sorted_thresholds, features, label, bias, extra=extra, unbalanced_penalty=unbalanced_penalty,
                                      reduce_axis=reduce_axis, make_transpose=make_transpose, use_my_cumsum=use_my_cumsum)
         
         if reduce_axis == 0:
@@ -352,6 +354,8 @@ class SplitMaker:
         final_params.update(params)
         input_tensors = {self.interface[t]: val for t, val in [('features', features), ('extra_features', extra_features), ('bias', bias), ('label', label), ('ax', ax),
                                                                    ('unbalanced_penalty', final_params['unbalanced_penalty'])]}
+        if extra_features is None:
+            del input_tensors[self.interface['extra_features']]
         #print('make_split_quick graph id:', id(self.interface['features'].graph))
         if sess is None:
             with tf.Session(graph=self.graph) as s:

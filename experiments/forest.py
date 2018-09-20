@@ -35,7 +35,8 @@ class LeafData:
         self.avg_target = np.mean(info['ematrix'].label, axis=0)[0]
         
     def to_text(self, floatformat = '.6f'):
-        return ('{:'+ floatformat + '} ({})\n({:'+floatformat+'})').format(self.val, self.train_size, self.avg_target)
+        valfloatformat = ':' + floatformat if isinstance(self.val, float) else ''
+        return ('{'+ valfloatformat + '} ({})\n({:'+floatformat+'})').format(self.val, self.train_size, self.avg_target)
     
     def shape(self):
         return 'box'
@@ -131,6 +132,11 @@ time1 = 0
 time2 = 0
 time3 = []
 
+def getslice(arr, slice, axis):
+    if arr is None:
+        return None
+    return arr[:, slice] if axis==1 else arr[slice, :]
+
 def split_ematrix(ematrix, depth, params, split_maker, sess=None):
     global time1, time2, time3
     if ematrix.gax is not None:
@@ -183,11 +189,11 @@ def split_ematrix(ematrix, depth, params, split_maker, sess=None):
             ax_left = ax_right = None
     
     axis1 = split_maker.reduce_axis == 1
-    left_ematrix = EMatrix(features=features[:, cond_left] if axis1 else features[cond_left, :], 
-                           extra_features=extra_features[:, cond_left] if axis1 else extra_features[cond_left, :],
+    left_ematrix = EMatrix(features=getslice(features, cond_left, split_maker.reduce_axis), 
+                           extra_features=getslice(extra_features, cond_left, split_maker.reduce_axis),
                            label=label[cond_left], bias=bias[cond_left], gax=ax_left)
-    right_ematrix = EMatrix(features=features[:, cond_right] if axis1 else features[cond_right, :],
-                            extra_features=extra_features[:, cond_right] if axis1 else extra_features[cond_right, :],
+    right_ematrix = EMatrix(features=getslice(features, cond_right, split_maker.reduce_axis), 
+                           extra_features=getslice(extra_features, cond_right, split_maker.reduce_axis),
                             label=label[cond_right], bias=bias[cond_right], gax=ax_right)
     left_info = {'prediction': split_info['best_delta_up'], 'ematrix': left_ematrix, 'sess': sess}
     right_info = {'prediction': split_info['best_delta_down'], 'ematrix': right_ematrix, 'sess': sess}
@@ -229,11 +235,11 @@ def build_tree(params, ematrix, split_maker, sess = None):
         ematrix.gax = split_maker.make_gax(ematrix.features, axis=split_maker.reduce_axis)
     return build_tree_helper(params, info=info, parent=None, split_maker=split_maker)
 
-def tree_apply(tree_arrays, features):
-    qi = np.zeros(features.shape[0], dtype=np.int32)
-    for current_depth in range(tree_arrays['treedepth']):
+def tree_apply(tree_arrays, features, extra_features=None, reduce_axis=0):
+    qi = np.zeros(features.shape[reduce_axis], dtype=np.int32)
+    for current_depth in range(tree_arrays['treedepth']):        
         fi = tree_arrays['features'][qi]
-        f = np.choose(fi, features.T)
+        f = np.choose(fi, features.T if reduce_axis == 0 else features)
         t = tree_arrays['thresholds'][qi]
         #print(qi, fi, f, t)
         #if current_depth == 0: 
@@ -241,7 +247,11 @@ def tree_apply(tree_arrays, features):
         answer = (f < t)*1
         new_qi = answer*tree_arrays['yes_node'][qi] + (1-answer)*tree_arrays['no_node'][qi]
         qi = new_qi
-    leaf_data = tree_arrays['leaf_data'][qi, 0]
+    if extra_features is None:
+        assert tree_arrays['leaf_data'].shape[1]==1, 'extra_features needed'
+        leaf_data = tree_arrays['leaf_data'][qi, 0]
+    else:
+        leaf_data = (tree_arrays['leaf_data'][qi, :]*(extra_features.T if reduce_axis == 1 else extra_features)).sum(axis=1)
     return leaf_data
 
 ######################################################################
@@ -276,10 +286,10 @@ class EBooster:
     def __init__(self, forest):
         self.forest = forest
     
-    def predict(self, features, tree_limit = None):
+    def predict(self, features, tree_limit = None, extra_features=None, reduce_axis=0):
         pred = np.zeros(features.shape[0], dtype=np.float32)
         for tree, tree_arrays in (self.forest if tree_limit is None else self.forest[:tree_limit]):
-            pred = pred + tree_apply(tree_arrays, features)
+            pred = pred + tree_apply(tree_arrays, features, extra_features=extra_features, reduce_axis=reduce_axis)
         return pred 
 
 
@@ -305,8 +315,8 @@ def train(params, ematrix, num_boost_round = 10):
                                                     extra_features=ematrix.extra_features, gax=ematrix.gax,
                                                     splitgax=start_params['splitgax']), split_maker=split_maker, sess=s)
             #print("tree ok, bias shape = {}".format(bias.shape), file=sys.stderr)
-            tree_arrays = init_arrays(tree, init_id(tree), weights_num = ematrix.extra_features.shape[1] if ematrix.extra_features is not None else 1)
-            bias_delta = tree_apply(tree_arrays, features)
+            tree_arrays = init_arrays(tree, init_id(tree), weights_num = ematrix.extra_features.shape[1-reduce_axis] if ematrix.extra_features is not None else 1)
+            bias_delta = tree_apply(tree_arrays, features=features, extra_features=ematrix.extra_features, reduce_axis=reduce_axis)
             #print("apply ok, bias delta shape = {}".format(bias_delta.shape), file=sys.stderr)
             bias = bias + np.reshape(bias_delta, newshape=bias.shape)
             forest.append((tree, tree_arrays))
