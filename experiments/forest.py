@@ -116,10 +116,10 @@ def prior_finish(params, info, parent):
         return False
     return params['max_depth'] <= parent.depth
 
-def post_finish(params, info, split_info, parent):
-    if split_info['left_info']['ematrix'].label.shape[0] < 2:
+def post_finish(params, info, left_info, right_info, split_info, parent):
+    if left_info['ematrix'].label.shape[0] < 2:
         return True
-    if split_info['right_info']['ematrix'].label.shape[0] < 2:
+    if right_info['ematrix'].label.shape[0] < 2:
         return True
     return False
 
@@ -197,14 +197,12 @@ def split_ematrix(ematrix, depth, params, split_maker, sess=None):
                             label=label[cond_right], bias=bias[cond_right], gax=ax_right)
     left_info = {'prediction': split_info['best_delta_up'], 'ematrix': left_ematrix, 'sess': sess}
     right_info = {'prediction': split_info['best_delta_down'], 'ematrix': right_ematrix, 'sess': sess}
-    split_info['left_info'] = left_info
-    split_info['right_info'] = right_info
     time2 += time.clock() - start
     return left_info, right_info, split_info
 
 def build_tree_helper(params, info, parent, split_maker):
     info['learning_rate'] = params['learning_rate']
-    if parent and parent.depth < 6:
+    if False and parent and parent.depth < 6:
         print("{d}".format(d=parent.depth) 
               if parent else '---',
               "".format(shape=info['ematrix'].label.shape[0]),
@@ -215,7 +213,7 @@ def build_tree_helper(params, info, parent, split_maker):
     node.depth = parent.depth + 1 if parent else 1
     
     left_info, right_info, split_info = split_ematrix(info['ematrix'], node.depth, params, split_maker=split_maker, sess=info['sess'])
-    if post_finish(params, info, split_info, parent):
+    if post_finish(params, info, left_info, right_info, split_info, parent):
         #print(split_info['right_info']['ematrix'].label.shape[0])
         #print(split_info)
         return LeafData(info)
@@ -294,7 +292,8 @@ class EBooster:
 
 
 def train(params, ematrix, num_boost_round = 10):
-    start_params = {'max_depth': 5, 'learning_rate': 0.3, 'splitgax': False, 'transposed_feature': False} 
+    start_params = {'max_depth': 5, 'learning_rate': 0.3, 'splitgax': False, 'transposed_feature': False, 
+                   'progress_callback': None} 
     start_params.update(params)
     
     reduce_axis=1 if start_params['transposed_feature'] else 0
@@ -310,7 +309,7 @@ def train(params, ematrix, num_boost_round = 10):
     features = ematrix.features
     with tf.Session(graph=split_maker.graph) as s:
         for r in range(num_boost_round):
-            print("\n{} round".format(r), file=sys.stderr)
+            # print("\n{} round".format(r), file=sys.stderr)
             tree = build_tree(start_params, EMatrix(ematrix.features, ematrix.label, bias=bias, 
                                                     extra_features=ematrix.extra_features, gax=ematrix.gax,
                                                     splitgax=start_params['splitgax']), split_maker=split_maker, sess=s)
@@ -321,5 +320,7 @@ def train(params, ematrix, num_boost_round = 10):
             bias = bias + np.reshape(bias_delta, newshape=bias.shape)
             forest.append((tree, tree_arrays))
             #print("forest appended", file=sys.stderr)
+            if start_params['progress_callback'] is not None:
+                start_params['progress_callback'](r, num_boost_round)
         
     return EBooster(forest)
