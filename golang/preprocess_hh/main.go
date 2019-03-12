@@ -65,7 +65,7 @@ func fillTitles2Id() {
 	fmt.Println(len(title2id), " records are written")
 }
 
-func consciseMerge(flnm string, title2id *map[string]int, dest *os.File, fileInd int) (ok bool){
+func consciseMerge(flnm string, title2id *map[string]int, dest *os.File, fileInd int) (ok bool) {
 	var err error
 	source, err := os.Open(flnm)
 	if err != nil {
@@ -143,9 +143,41 @@ func compactTable() {
 	}
 }
 
-type Weights struct {
-	ZeroWeight int
-	OneWeight int
+type IdTarget struct {
+	Id, Target int
+}
+
+type OneDayInfo struct {
+	Day    int
+	DayIds map[IdTarget]int
+}
+
+func processOneDay(dest *os.File, piecePipe chan OneDayInfo) {
+	for {
+		dayInfo, ok := <-piecePipe
+		if !ok {
+			break
+		}
+		day := dayInfo.Day
+		dayIds := dayInfo.DayIds
+		idsSet := make(map[int]struct{})
+		for idTarget := range dayIds {
+			idsSet[idTarget.Id] = struct{}{}
+		}
+		sortedIds := make([]int, 0, len(idsSet))
+		for titleId := range idsSet {
+			sortedIds = append(sortedIds, titleId)
+		}
+		sort.Ints(sortedIds)
+		for _, titleId := range sortedIds {
+			weightZeros := dayIds[IdTarget{titleId, 0}]
+			weightOnes := dayIds[IdTarget{titleId, 1}]
+			if weightOnes > 0 && weightOnes < weightZeros {
+				dest.WriteString(fmt.Sprintf("%d %d %d %d\n",
+					day, titleId, weightZeros, weightOnes))
+			}
+		}
+	}
 }
 
 func twoColumn() {
@@ -169,57 +201,41 @@ func twoColumn() {
 	defer dest.Close()
 
 	prevDay, currentDay := 0, 0
+	printMeter := 0
 
-	dayid2weights := make(map[int]map[int]*Weights)
+	piecePipe := make(chan OneDayInfo)
+
+	go processOneDay(dest, piecePipe)
+
+	IdTarget2weight := make(map[IdTarget]int)
 	lineReader := bufio.NewReader(source)
 	for {
 		line, _, err := lineReader.ReadLine()
 		if err != nil {
+			piecePipe <- OneDayInfo{currentDay, IdTarget2weight}
+			close(piecePipe)
 			break
 		}
 		var (
-			day int
+			day     int
 			titleId int
-			target int
-			weight int
+			target  int
+			weight  int
 		)
 		fmt.Sscanf(string(line), "%d %d %d %d", &day, &titleId, &target, &weight)
+		IdTarget2weight[IdTarget{titleId, target}] = weight
+
 		prevDay = currentDay
 		currentDay = day
 		if prevDay != currentDay {
+			piecePipe <- OneDayInfo{currentDay, IdTarget2weight}
+			IdTarget2weight = make(map[IdTarget]int)
 			fmt.Print(currentDay, " ")
+			if printMeter%20 == 0 {
+				fmt.Println()
+			}
+			printMeter++
 		}
-		_, hasDay := dayid2weights[day]
-		if !hasDay {
-			dayid2weights[day] = make(map[int]*Weights)
-		}
-		_, hasStruct := dayid2weights[day][titleId]
-		if !hasStruct {
-			dayid2weights[day][titleId] = new(Weights)
-		}
-		s := dayid2weights[day][titleId]
-		if target == 0 {
-			s.ZeroWeight = weight
-		} else {
-			s.OneWeight = weight
-		}
-	}
-
-	daysNumber := len(dayid2weights)
-	allDays := make([]int, daysNumber)
-	for day, _ := range dayid2weights {
-		allDays = append(allDays, day)
-	}
-
-	fmt.Println("allDays has length", len(allDays))
-	sort.Ints(allDays)
-	fmt.Println("head of days: ")
-	for ind := 0; ind < 20 && ind < len(allDays); ind ++ {
-		fmt.Print(allDays[ind], " ")
-	}
-	fmt.Println()
-	for ind := len(allDays) - 1; ind > len(allDays) - 20 && ind >= 0; ind -- {
-		fmt.Print(allDays[ind], " ")
 	}
 }
 
