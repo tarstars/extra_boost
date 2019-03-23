@@ -56,5 +56,6 @@
     * Is it possible to improve quality of HH dataset by adding data on presence of vacancy on site?
   * Any idea on constructing time-dependent dataset from the Yandex data?
   
-  
+## Inverse backpropagation
+  * Review from SOTA understanding the idea of time unrecoverability.   
 
