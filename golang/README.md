@@ -15,8 +15,8 @@
       * subset leads to lift
       * lift is a function of time
     * put in the text:
-      * since extra features contains constant, extra boost reproduces xgbt
-      * first steps eliminate obvious dependencies, as xgbt does.
+      * since extra features contains constant, extra boost reproduces gbdt
+      * first steps eliminate obvious dependencies, as gbdt does.
         Following steps take care of extra dependencies.
       
 * extra neuronetwork
