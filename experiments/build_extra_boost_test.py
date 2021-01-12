@@ -4,7 +4,7 @@ import unittest
 import numpy as np
 
 from experiments import forest
-from experiments.extra_utils import subpool, time_features
+from experiments.extra_utils import subpool, time_features, test_extra_predictions
 from experiments.forest import build_tree, EMatrix
 from experiments.split import SplitMaker
 
@@ -46,7 +46,7 @@ class TestBuildExtraBoost(unittest.TestCase):
             "unbalanced_penalty": 0.001,
         }
 
-        rounds = 400
+        rounds = 10
 
         booster = forest.train(
             boost_params,
@@ -59,6 +59,9 @@ class TestBuildExtraBoost(unittest.TestCase):
             ),
             num_boost_round=rounds,
         )
+
+        whole_prediction = booster.predict(full_features, extra_features=full_extra_features, tree_limit=3000)
+        test_extra_predictions(50, time_column, full_label, whole_prediction)
 
 
 if __name__ == "__main__":
