@@ -1,7 +1,7 @@
 import sys, os, io, json, numpy as np, random, time
 import graphviz
 
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
 from split import SplitMaker
 
 # import cProfile
@@ -101,7 +101,7 @@ def init_arrays(root, n, weights_num=1):
                   no_node=empty_array(),
                   is_leaf=empty_array(),
                   depths=empty_array(),
-                  leaf_data=np.zeros((n,weights_num), dtype=np.float32)
+                  leaf_data=np.zeros((n, weights_num), dtype=np.float32)
                  )
     init_arrays_helper(root, arrays)
     arrays['treedepth'] = np.max(arrays['depths'])
@@ -140,7 +140,7 @@ def getslice(arr, slice, axis):
 def split_ematrix(ematrix, depth, params, split_maker, sess=None):
     global time1, time2, time3
     if ematrix.gax is not None:
-        start = time.clock()
+        start = time.process_time()
         #print(ematrix.features.shape, file=sys.stderr)
         #if (ematrix.features.shape[0]<=2):
         #    print(ematrix.gax, file=sys.stderr)
@@ -148,7 +148,7 @@ def split_ematrix(ematrix, depth, params, split_maker, sess=None):
                                        extra_features=ematrix.extra_features,
                                        label=ematrix.label, ax=ematrix.gax, params=params,
                                       profile_file = ('profile_cumsum3.json' if depth==1 else None), sess=sess)
-        dif = time.clock() - start
+        dif = time.process_time() - start
         time1 += dif
         time3 += [dif]
         
@@ -163,7 +163,7 @@ def split_ematrix(ematrix, depth, params, split_maker, sess=None):
         ax_left = ax_right = None
 
         
-    start = time.clock()
+    start = time.process_time()
     features = ematrix.features
     extra_features = ematrix.extra_features
     bias = ematrix.bias
@@ -197,7 +197,7 @@ def split_ematrix(ematrix, depth, params, split_maker, sess=None):
                             label=label[cond_right], bias=bias[cond_right], gax=ax_right)
     left_info = {'prediction': split_info['best_delta_up'], 'ematrix': left_ematrix, 'sess': sess}
     right_info = {'prediction': split_info['best_delta_down'], 'ematrix': right_ematrix, 'sess': sess}
-    time2 += time.clock() - start
+    time2 += time.process_time() - start
     return left_info, right_info, split_info
 
 def build_tree_helper(params, info, parent, split_maker):
@@ -224,7 +224,7 @@ def build_tree_helper(params, info, parent, split_maker):
     return node
 
 
-def build_tree(params, ematrix, split_maker, sess = None):
+def build_tree(params, ematrix, split_maker, sess=None):
     if split_maker is None:
         # not neccesary
         split_maker = SplitMaker.make_split_new()

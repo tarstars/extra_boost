@@ -4,7 +4,7 @@ import unittest
 # import json
 
 import numpy as np
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
 from tensorflow.python.client import timeline
 
 from cumsum_zoo import mycumsum1
@@ -254,7 +254,7 @@ def create_split_interface():
         y = tf.gather(label, ax)[:, :, 0]
         b = tf.gather(bias, ax)[:, :, 0]
         # sorted_thresholds = tf.gather(features, ax, axis=0)
-        sorted_thresholds = tf.contrib.framework.sort(features, axis=0)
+        sorted_thresholds = tf.sort(features, axis=0)
         common_tensors = common_part(y, b, sorted_thresholds, features, label, bias)
         
     result = {'graph': graph,
