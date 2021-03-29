@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"gonum.org/v1/gonum/mat"
 	"gorgonia.org/tensor"
@@ -13,8 +14,8 @@ import (
 	"github.com/sbinet/npyio"
 )
 
-//readNpz reads the content of non-compressed npy file
-func readNpz(fileName string) *mat.Dense {
+//readNpy reads the content of npy file
+func readNpy(fileName string) *mat.Dense {
 	f, err := os.Open(fileName)
 	if err != nil {
 		log.Fatal(err)
@@ -37,7 +38,7 @@ func readNpz(fileName string) *mat.Dense {
 	return mat.NewDense(shape[0], shape[1], raw)
 }
 
-//EMatrix contains data for either MSE or LogLoss loss funtions
+//EMatrix contains data for either MSE or LogLoss loss functions
 type EMatrix struct {
 	featuresInter *mat.Dense
 	featuresExtra *mat.Dense
@@ -101,9 +102,9 @@ func (em EMatrix) Split(bias *mat.Dense, split BestSplit) (leftEmatrix, rightEma
 
 //ReadEMatrix reads three components of a data set and unites them into one EMatrix object
 func ReadEMatrix(fileNameInter, fileNameExtra, fileNameTarget string) (em EMatrix) {
-	em.featuresInter = readNpz(fileNameInter)
-	em.featuresExtra = readNpz(fileNameExtra)
-	em.target = readNpz(fileNameTarget)
+	em.featuresInter = readNpy(fileNameInter)
+	em.featuresExtra = readNpy(fileNameExtra)
+	em.target = readNpy(fileNameTarget)
 
 	return
 }
@@ -130,7 +131,7 @@ func (a argsort) Less(i, j int) bool {
 	return a.c.AtVec(a.ind[i]) < a.c.AtVec(a.ind[j])
 }
 
-//Swap swaps elements of inderect addressing array.
+//Swap swaps elements of the indirect addressing array.
 func (a argsort) Swap(i, j int) {
 	a.ind[i], a.ind[j] = a.ind[j], a.ind[i]
 }
@@ -171,32 +172,32 @@ type SplitLoss interface {
 //Logloss struct.
 type LogLoss struct{}
 
-//lossDer1 the first derivative for the logloss
+//lossDer1 calculates the first derivative for the logloss
 func (LogLoss) lossDer1(target, bias float64) float64 {
 	return -target*sigmoid64(-bias) + (1.0-target)*sigmoid64(bias)
 }
 
-//lossDer2 the second derivative for the logloss
+//lossDer2 calculates the second derivative for the logloss
 func (LogLoss) lossDer2(_, bias float64) float64 {
 	return sigmoid64(-bias) * sigmoid64(bias)
 }
 
-//type MseLoss struct{}
-//
-//func (MseLoss) lossDer1(target, bias float64) float64 {
-//	return target - bias
-//}
-//
-//func (MseLoss) lossDer2(_, _ float64) float64 {
-//	return 1.0
-//}
+type MseLoss struct{}
+
+func (MseLoss) lossDer1(target, bias float64) float64 {
+	return target - bias
+}
+
+func (MseLoss) lossDer2(_, _ float64) float64 {
+	return 1.0
+}
 
 //BestSplit contains results of the split selection algorithm.
 type BestSplit struct {
-	bestValue                float64
-	featureIndex, orderIndex int
-	threshold                float64
-	deltaUp, deltaDown       *mat.Dense
+	bestValue, currentValue          float64
+	featureIndex, orderIndex         int
+	threshold                        float64
+	deltaUp, deltaDown, deltaCurrent *mat.Dense
 }
 
 //IntIterable is the interface for iteration over an collection of integers.
@@ -205,7 +206,7 @@ type IntIterable interface {
 	GetNext() int
 }
 
-//Range is an iterator over half inverval [begin, end) with the step step.
+//Range is an iterator over half interval [begin, end) with the step step.
 type Range struct {
 	begin, end, step, pos int
 }
@@ -281,7 +282,7 @@ func IterateSplits(
 	}
 }
 
-//flushIntermediate flushes gradient and hessian
+//flushIntermediate flushes the gradient and the hessian
 func flushIntermediate(d int, accumGrad *mat.Dense, accumHess *mat.Dense) {
 	for zeroIndP := 0; zeroIndP < d; zeroIndP++ {
 		accumGrad.Set(zeroIndP, 0, 0)
@@ -296,22 +297,25 @@ func selectTheBestSplit(em EMatrix, featuresAs []int, bestSplit *BestSplit, h, q
 	firstIter := true
 
 	bestSplit.featureIndex = q
-	for ind := 0; ind < h-1; ind++ {
-		currentLossValue := -0.5 * (deltasLossUp.At(ind, 0) + deltasLossDown.At(ind+1, 0))
+	for h_ind := 0; h_ind < h-1; h_ind++ {
+		currentLossValue := -0.5 * (deltasLossUp.At(h_ind, 0) + deltasLossDown.At(h_ind+1, 0))
 		if firstIter || bestSplit.bestValue > currentLossValue {
 			firstIter = false
 			bestSplit.bestValue = currentLossValue
-			for ind := 0; ind < d; ind++ {
-				bestSplit.deltaUp.Set(ind, 0, weightsUp.At(ind, 0))
-				bestSplit.deltaDown.Set(ind, 0, weightsDown.At(ind, 0))
+			for q_ind := 0; q_ind < d; q_ind++ {
+				bestSplit.deltaUp.Set(q_ind, 0, weightsUp.At(h_ind, q_ind))
+				bestSplit.deltaDown.Set(q_ind, 0, weightsDown.At(h_ind, q_ind))
 			}
-			bestSplit.threshold = (em.featuresInter.At(featuresAs[ind], q) + em.featuresInter.At(featuresAs[ind+1], q)) / 2 // TODO: smart threshold selection that assumes correct handling of corner cases
-			bestSplit.orderIndex = ind
+			bestSplit.threshold = (em.featuresInter.At(featuresAs[h_ind], q) + em.featuresInter.At(featuresAs[h_ind+1], q)) / 2 // TODO: smart threshold selection that assumes correct handling of corner cases
+			bestSplit.orderIndex = h_ind
 		}
+	}
+	for ind := 0; ind < d; ind++ {
+		bestSplit.deltaCurrent.Set(ind, 0, weightsUp.At(h-1, ind))
 	}
 }
 
-//scanForSplit allocates memory, performs argsort of selected feature column
+//scanForSplit allocates memory, performs argsort of selected feature column,
 //iterates through splits upside down and downside up and selects the best split
 //in the current column.
 func scanForSplit(
@@ -339,6 +343,7 @@ func scanForSplit(
 
 	bestSplit.deltaUp = mat.NewDense(d, 1, nil)
 	bestSplit.deltaDown = mat.NewDense(d, 1, nil)
+	bestSplit.deltaCurrent = mat.NewDense(d, 1, nil)
 
 	IterateSplits(NewRange(0, h, 1), &em, featuresAs,
 		bias, currentLoss, d, accumGrad, rawHessian, accumHess, parLambda,
@@ -355,9 +360,9 @@ func scanForSplit(
 	return
 }
 
-//validateDimansions checks the consistency of dimensions in arrays from the current dataset
+//validateDimensions checks the consistency of dimensions in arrays from the current dataset
 //and returns the height (the number of objects), the width (the number of features) and the depth
-//(the number of extra features) of the current dataset.
+//(the number of extra features per record) of the current dataset.
 func (em EMatrix) validatedDimensions() (h, w, d int) {
 	h, w = em.featuresInter.Dims()
 	extraH, d := em.featuresExtra.Dims()
@@ -390,13 +395,13 @@ func (em EMatrix) allocateArrays() (rawHessian *tensor.Dense) {
 	return
 }
 
-//Struct for pool of processes
+//Struct for pool of threads
 type Pool struct {
 	taskChannel chan Runnable
 	waitGroup   sync.WaitGroup
 }
 
-//Thread of executing tasks
+//A thread of executing tasks.
 func (pool *Pool) executor() {
 	for {
 		if task, ok := <-pool.taskChannel; ok {
@@ -408,12 +413,12 @@ func (pool *Pool) executor() {
 	}
 }
 
-//Interface for tasks
+//The interface for tasks.
 type Runnable interface {
 	Run()
 }
 
-//Create new pool for n async processes
+//Create a new pool for n async processes.
 func NewPool(n int) (ret *Pool) {
 	ret = &Pool{}
 	ret.taskChannel = make(chan Runnable)
@@ -423,32 +428,32 @@ func NewPool(n int) (ret *Pool) {
 	return
 }
 
-//Add task in pool
+//Add a task to the pool.
 func (pool *Pool) AddTask(task Runnable) {
 	pool.waitGroup.Add(1)
 	pool.taskChannel <- task
 }
 
-//Wait for all task finish
+//Wait for all task to finish.
 func (pool *Pool) WaitAll() {
 	pool.waitGroup.Wait()
 }
 
-//TaskFindBestSplit is the task of finding the best split to be placed into a multitask Pool
+//TaskFindBestSplit is the task of finding the best split to be placed into a multitask Pool.
 type TaskFindBestSplit struct {
 	columnSplits []BestSplit
 	ind          int
 	f            func(int) BestSplit
 }
 
-//Run is the implementation of Runnable interface
+//Run is an implementation of the Runnable interface.
 func (tfbs *TaskFindBestSplit) Run() {
 	tfbs.columnSplits[tfbs.ind] = tfbs.f(tfbs.ind)
 }
 
-//TreeNode is a node of a tree. Tree is stored in an array. LeftIndex and RightIndex are euqal to -1
+//TreeNode is a node of a tree. Tree is stored in an array. LeftIndex and RightIndex are equal to -1
 //when the current node is a leaf otherwise they contain array indices of children.
-//A leaf node contains LeafIndex that is an index of a LeafNodes array
+//A leaf node contains LeafIndex that is an index of the LeafNodes array.
 type TreeNode struct {
 	TreeNodeId            int
 	FeatureNumber         int
@@ -463,26 +468,26 @@ func NewTreeNodeFromSplitInfo(splitInfo BestSplit, treeNodeId int) TreeNode {
 	return TreeNode{treeNodeId, splitInfo.featureIndex, splitInfo.threshold, -1, -1, -1}
 }
 
-//LeafNode stores leaf-related informatin. It is a prediction from this leaf and possibly some other statistics.
+//LeafNode stores leaf-related information. It is a prediction from this leaf and possibly some other statistics.
 type LeafNode struct {
 	LeafNodeId int
 	Prediction []float64
 }
 
-//NewLeafNode creates a new leaf node
-func NewLeafNode(leafData *mat.Dense) (leafNode *LeafNode) {
+//NewLeafNode creates a new leaf node.
+func NewLeafNode(leafData *mat.Dense, learningRate float64) (leafNode *LeafNode) {
 	h, _ := leafData.Dims()
 
 	leafNode = &LeafNode{-1, make([]float64, h)}
 
 	for ind := 0; ind < h; ind++ {
-		leafNode.Prediction[ind] = leafData.At(ind, 0)
+		leafNode.Prediction[ind] = leafData.At(ind, 0) * learningRate
 	}
 
 	return
 }
 
-//OneTree describes one tree in a classifier
+//OneTree describes one tree in a classifier.
 type OneTree struct {
 	d         int // the extra depth
 	TreeNodes []TreeNode
@@ -524,28 +529,29 @@ func (oneTree OneTree) PredictValue(featuresInter, featuresExtra *mat.Dense) (pr
 	return
 }
 
-//NewTree builds one new tree in a model
-func NewTree(ematrix EMatrix, bias *mat.Dense, regLambda float64, maxDepth int) (oneTree OneTree) {
+//NewTree builds one new tree in a model.
+func NewTree(ematrix EMatrix, bias *mat.Dense, regLambda float64, maxDepth int, learningRate float64) (oneTree OneTree) {
 	oneTree.TreeNodes = make([]TreeNode, 0)
 	oneTree.LeafNodes = make([]LeafNode, 0)
 	_, oneTree.d = ematrix.featuresExtra.Dims()
 
-	(&oneTree).BuildTree(ematrix, bias, nil, regLambda, maxDepth, 0)
+	(&oneTree).BuildTree(ematrix, bias, nil, regLambda, maxDepth, 0, learningRate)
 
 	return
 }
 
-//Height calculates the height of a matrix m
+//Height calculates the height of a matrix m.
 func Height(m *mat.Dense) int {
 	h, _ := m.Dims()
 	return h
 }
 
-//BuildTree recurrently builds a tree no
+//BuildTree recurrently builds a tree node.
 func (oneTree *OneTree) BuildTree(
 	ematrix EMatrix, bias *mat.Dense,
 	leafInfo *LeafNode, parLambda float64, maxDepth int, currentDepth int,
-	) (int, bool) {
+	learningRate float64,
+) (int, bool) {
 	if leafInfo == nil || (currentDepth < maxDepth && Height(ematrix.featuresInter) > 5) { // TODO: More flexible approach to stop condition
 		treeNodeId := len(oneTree.TreeNodes)
 		log.Printf("\tnodeId = %d size = %d", treeNodeId, Height(ematrix.featuresInter))
@@ -555,13 +561,13 @@ func (oneTree *OneTree) BuildTree(
 
 		leftEmatrix, rightEmatrix, leftBias, rightBias := ematrix.Split(bias, bestSplit)
 
-		if nodeId, isNode := oneTree.BuildTree(leftEmatrix, leftBias, NewLeafNode(bestSplit.deltaUp), parLambda, maxDepth, currentDepth+1); isNode {
+		if nodeId, isNode := oneTree.BuildTree(leftEmatrix, leftBias, NewLeafNode(bestSplit.deltaUp, learningRate), parLambda, maxDepth, currentDepth+1, learningRate); isNode {
 			oneTree.TreeNodes[treeNodeId].LeftIndex = nodeId
 		} else {
 			oneTree.TreeNodes[treeNodeId].LeafIndex = nodeId
 		}
 
-		if nodeId, isNode := oneTree.BuildTree(rightEmatrix, rightBias, NewLeafNode(bestSplit.deltaDown), parLambda, maxDepth, currentDepth+1); isNode {
+		if nodeId, isNode := oneTree.BuildTree(rightEmatrix, rightBias, NewLeafNode(bestSplit.deltaDown, learningRate), parLambda, maxDepth, currentDepth+1, learningRate); isNode {
 			oneTree.TreeNodes[treeNodeId].RightIndex = nodeId
 		} else {
 			oneTree.TreeNodes[treeNodeId].LeafIndex = nodeId
@@ -582,7 +588,7 @@ func TheBestSplit(ematrix EMatrix, bias *mat.Dense, parLambda float64) BestSplit
 	h, w, d := ematrix.validatedDimensions()
 	rawHessian := ematrix.allocateArrays()
 
-	taskPool := NewPool(4)
+	taskPool := NewPool(10)
 	result := make([]BestSplit, w)
 
 	for q := 0; q < w; q++ {
@@ -609,19 +615,19 @@ func TheBestSplit(ematrix EMatrix, bias *mat.Dense, parLambda float64) BestSplit
 	return result[bestIndex]
 }
 
-//EBooster is the model class
+//EBooster is the model class.
 type EBooster struct {
 	Trees []OneTree
 }
 
-//NewEBooster creates a new model
-func NewEBooster(ematrix EMatrix, nStages int, regLambda float64, maxDepth int) (ebooster *EBooster) {
+//NewEBooster creates a new model.
+func NewEBooster(ematrix EMatrix, nStages int, regLambda float64, maxDepth int, learningRate float64) (ebooster *EBooster) {
 	ebooster = &EBooster{make([]OneTree, 0)}
 	h, _ := ematrix.featuresInter.Dims()
 	bias := mat.NewDense(h, 1, nil)
 	for stage := 0; stage < nStages; stage++ {
 		log.Printf("Tree number %d\n", stage+1)
-		tree := NewTree(ematrix, bias, regLambda, maxDepth)
+		tree := NewTree(ematrix, bias, regLambda, maxDepth, learningRate)
 		ebooster.Trees = append(ebooster.Trees, tree)
 		deltaB := tree.PredictValue(ematrix.featuresInter, ematrix.featuresExtra)
 		bias.Add(bias, deltaB)
@@ -629,7 +635,7 @@ func NewEBooster(ematrix EMatrix, nStages int, regLambda float64, maxDepth int) 
 	return
 }
 
-//PredictValue infers values of target. It requires two sets of features - both interpolating and extrapolating.
+//PredictValue infers values of the target. It requires both sets of features - interpolating and extrapolating.
 func (ebooster EBooster) PredictValue(features_inter, features_extra *mat.Dense) (prediction *mat.Dense) {
 	isFirst := true
 	for _, currentTree := range ebooster.Trees {
@@ -651,11 +657,15 @@ func main() {
 		"../prepare_dataset/target.npy",
 	)
 
-	clf := NewEBooster(ematrix, 3, 1e-6, 5)
+	//cpuProfileFile, err := os.Create("cpu_profile.out")
+	//handleError(err)
+	//handleError(pprof.StartCPUProfile(cpuProfileFile))
+	clf := NewEBooster(ematrix, 10, 1e-6, 5, 0.2)
+	//pprof.StopCPUProfile()
 
 	prediction := clf.PredictValue(ematrix.featuresInter, ematrix.featuresExtra)
 
-	dst, err := os.Create("a.txt")
+	dst, err := os.Create("golang_prediction_a.txt")
 	handleError(err)
 
 	h, _ := ematrix.featuresInter.Dims()
@@ -664,4 +674,8 @@ func main() {
 		handleError(err)
 	}
 	handleError(dst.Close())
+
+	json_clf, err := json.MarshalIndent(clf, "", "  ")
+	handleError(err)
+	fmt.Println(string(json_clf))
 }
